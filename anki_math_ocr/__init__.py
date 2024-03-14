@@ -95,18 +95,53 @@ def media_path():
     return _ANKI_MEDIA_PATH
 
 
-IMG_SRC_RE = re.compile(r'< *img +src="(.*?)" *>', re.IGNORECASE)
+IMG_SRC_RE = re.compile(r'< *img +src="(?P<filename>.*?)" *>', re.IGNORECASE)
 
-
-def ocr_comment_image_src(img_html):
-    filename = img_html.group(1)
-    ocr_html = ocr_image(os.path.join(media_path(), filename))
-    return f"""
+OCR_COMMENT_IMAGE_SRC_TEMPLATE = """\
 <div class="anki-math-ocr">
 <p>anki-math-ocr OCR for image:</p>
 <p>{ocr_html}</p>
 <p><img class="anki-math-ocr-image" src="{filename}"></p>
 </div>"""
+
+
+def format_string_to_regex(format_string):
+    """
+    Converts a format string with {placeholder} patterns to a regex pattern.
+
+    Args:
+    format_string (str): The format string containing {placeholder} patterns.
+
+    Returns:
+    str: A regex pattern with capturing groups for the placeholders.
+    """
+    # Escape the entire string
+    regex_pattern = re.escape(format_string)
+
+    # Replace escaped placeholders with a regex group to capture any characters
+    # The placeholder is assumed to not contain '}' character inside
+    regex_pattern = re.sub(r"\\{([^\\}]+)\\}", r"(?P<\1>.*?)", regex_pattern)
+    return re.compile(regex_pattern, re.DOTALL)
+
+
+# OCR_COMMENT_IMAGE_SRC_TEMPLATE_REGEX = format_string_to_regex(
+#     OCR_COMMENT_IMAGE_SRC_TEMPLATE
+# )
+OCR_COMMENT_IMAGE_SRC_TEMPLATE_REGEX = re.compile(
+    r"""<div class="anki-math-ocr">.*?<img\s+class="anki-math-ocr-image"\s+src="(?P<filename>.*?)".*?</div>""",
+    re.DOTALL,
+)
+
+
+def ocr_comment_image_src(img_html):
+    filename = img_html.group("filename")
+    ocr_html = ocr_image(os.path.join(media_path(), filename))
+    return OCR_COMMENT_IMAGE_SRC_TEMPLATE.format(ocr_html=ocr_html, filename=filename)
+
+
+def ocr_comment_image_src_unocr(match):
+    filename = match.group("filename")
+    return f'<img src="{filename}">'
 
 
 _OCR_MODEL = None
@@ -204,6 +239,12 @@ def _main():
     parser.add_argument(
         "--dry-run", help="Dry-run mode.", action="store_true", required=False
     )
+    parser.add_argument(
+        "--unocr",
+        help="Remove OCR previously added by this script.",
+        action="store_true",
+        required=False,
+    )
     args = parser.parse_args()
 
     # First, find notes added to Anki but not yet to Pocket and add them to
@@ -228,6 +269,7 @@ def _main():
     )
     note_infos = response["result"]
     fields = args.fields.split(",")
+    logger.debug(f"fields = {fields}")
     if note_infos:
         try:
             for batch in batched(note_infos, BATCH_SIZE):
@@ -240,25 +282,34 @@ def _main():
                         content = note_info["fields"][field]
                         if not content:
                             continue
-                        try:
-                            new_fields[field] = IMG_SRC_RE.sub(
-                                ocr_comment_image_src, content["value"]
+                        if args.unocr:
+                            result = OCR_COMMENT_IMAGE_SRC_TEMPLATE_REGEX.sub(
+                                ocr_comment_image_src_unocr, content["value"]
                             )
-                        except ValueError:
-                            logger.error(
-                                "Could not parse image in field %s of note %s",
-                                field,
-                                note_info["noteId"],
-                            )
-                            continue
-                        except Exception as e:
-                            logger.error(
-                                "Exception while parsing image in field %s of note %s: %s",
-                                field,
-                                note_info["noteId"],
-                                e,
-                            )
-                            continue
+                            if result != content["value"]:
+                                new_fields[field] = result
+                        else:
+                            try:
+                                result = IMG_SRC_RE.sub(
+                                    ocr_comment_image_src, content["value"]
+                                )
+                                if result != content["value"]:
+                                    new_fields[field] = result
+                            except ValueError:
+                                logger.error(
+                                    "Could not parse image in field %s of note %s",
+                                    field,
+                                    note_info["noteId"],
+                                )
+                                continue
+                            except Exception as e:
+                                logger.error(
+                                    "Exception while parsing image in field %s of note %s: %s",
+                                    field,
+                                    note_info["noteId"],
+                                    e,
+                                )
+                                continue
                     if not new_fields:
                         continue
                     update_action = {
