@@ -144,6 +144,27 @@ def ocr_comment_image_src_unocr(match):
     return f'<img src="{filename}">'
 
 
+FIX_MATHJAX_TAGS_INLINE_REGEX = re.compile(
+    r"""<anki-mathjax(?:|\s+block="false")>(.*?)</anki-mathjax>""",
+    flags=(re.DOTALL | re.IGNORECASE),
+)
+
+FIX_MATHJAX_TAGS_BLOCK_REGEX = re.compile(
+    r"""<anki-mathjax\s+block="true">(.*?)</anki-mathjax>""",
+    flags=(re.DOTALL | re.IGNORECASE),
+)
+
+
+def fix_mathjax_tags_inline(match):
+    content = match.group(1)
+    return f"\\( {content} \\)"
+
+
+def fix_mathjax_tags_block(match):
+    content = match.group(1)
+    return f"\\[ {content} \\]"
+
+
 _OCR_MODEL = None
 
 
@@ -245,6 +266,12 @@ def _main():
         action="store_true",
         required=False,
     )
+    parser.add_argument(
+        "--fix-mathjax",
+        help="Fix mathjax tags.",
+        action="store_true",
+        required=False,
+    )
     args = parser.parse_args()
 
     # First, find notes added to Anki but not yet to Pocket and add them to
@@ -282,7 +309,18 @@ def _main():
                         content = note_info["fields"][field]
                         if not content:
                             continue
-                        if args.unocr:
+                        if args.fix_mathjax:
+                            result = FIX_MATHJAX_TAGS_INLINE_REGEX.sub(
+                                fix_mathjax_tags_inline, content["value"]
+                            )
+                            if result != content["value"]:
+                                new_fields[field] = result
+                            result = FIX_MATHJAX_TAGS_BLOCK_REGEX.sub(
+                                fix_mathjax_tags_block, content["value"]
+                            )
+                            if result != content["value"]:
+                                new_fields[field] = result
+                        elif args.unocr:
                             result = OCR_COMMENT_IMAGE_SRC_TEMPLATE_REGEX.sub(
                                 ocr_comment_image_src_unocr, content["value"]
                             )
